@@ -99,6 +99,31 @@ button { background:none; cursor:pointer; padding:4px !important; font-size:12px
   height: 100%;
 }
 
+.synoptic-map-host svg[data-synoptic-dimmed="true"] path,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] polygon,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] polyline,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] rect,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] circle,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] ellipse,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] line {
+  opacity: 0.25;
+}
+
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"],
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] path,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] polygon,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] polyline,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] rect,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] circle,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] ellipse,
+.synoptic-map-host svg[data-synoptic-dimmed="true"] [data-synoptic-active="true"] line {
+  opacity: 1;
+}
+
+.synoptic-label-layer {
+  pointer-events: none;
+}
+
 .synoptic-label {
   fill: #202020;
   paint-order: stroke;

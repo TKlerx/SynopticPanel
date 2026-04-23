@@ -8,6 +8,8 @@ import DataView = powerbi.DataView;
 import ISelectionId = powerbi.visuals.ISelectionId;
 import IColorPalette = powerbi.extensibility.IColorPalette;
 import ISelectionManager = powerbi.extensibility.ISelectionManager;
+import ITooltipService = powerbi.extensibility.ITooltipService;
+import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import IVisual = powerbi.extensibility.visual.IVisual;
 import PrimitiveValue = powerbi.PrimitiveValue;
 import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructorOptions;
@@ -19,6 +21,7 @@ interface SynopticMapArea {
     displayName?: string;
     elementId?: string;
     selector?: string;
+    unmatchable?: boolean;
 }
 
 interface SynopticMapScale {
@@ -68,6 +71,14 @@ interface SynopticManualState {
     color?: string;
 }
 
+interface SynopticBoundState {
+    value: number;
+    color: string | null;
+    displayName: string | null;
+    sourcePosition: number;
+    isTarget: boolean;
+}
+
 interface SynopticDataPoint {
     key: string;
     value?: number;
@@ -76,11 +87,14 @@ interface SynopticDataPoint {
     stateValue?: number;
     color: string;
     selectionId: ISelectionId;
+    tooltips: VisualTooltipDataItem[];
 }
 
 interface SynopticModel {
     map?: SynopticMapDefinition;
     dataPoints: SynopticDataPoint[];
+    boundStates: SynopticBoundState[];
+    hasBoundStates: boolean;
     hasHighlights: boolean;
     settings: SynopticVisualSettings;
 }
@@ -100,17 +114,31 @@ export class Visual implements IVisual {
     private readonly root: HTMLDivElement;
     private readonly status: HTMLDivElement;
     private readonly svgHost: HTMLDivElement;
+    private readonly tooltipService: ITooltipService;
     private readonly mapCache: Map<string, string>;
     private formattingSettings: VisualFormattingSettingsModel;
     private updateNonce: number;
+    private currentSvg: SVGSVGElement | null;
+    private currentMatchedElements: Set<SVGElement>;
 
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
         this.target = options.element;
         this.selectionManager = options.host.createSelectionManager();
+        this.tooltipService = options.host.tooltipService;
         this.formattingSettingsService = new FormattingSettingsService();
         this.mapCache = new Map<string, string>();
         this.updateNonce = 0;
+        this.currentSvg = null;
+        this.currentMatchedElements = new Set();
+
+        this.selectionManager.registerOnSelectCallback(() => {
+            const ids = this.selectionManager.getSelectionIds() as ISelectionId[];
+            this.status.textContent = `cb:${ids.length} has:${this.selectionManager.hasSelection()}`;
+            if (this.currentSvg) {
+                this.applySelectionState(this.currentSvg, this.currentMatchedElements, ids);
+            }
+        });
 
         this.root = document.createElement("div");
         this.root.className = "synoptic-modern";
@@ -141,6 +169,9 @@ export class Visual implements IVisual {
     }
 
     public getFormattingModel(): powerbi.visuals.FormattingModel {
+        if (!this.formattingSettings) {
+            this.formattingSettings = new VisualFormattingSettingsModel();
+        }
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
     }
 
@@ -150,7 +181,34 @@ export class Visual implements IVisual {
         const categoryColumn = categorical?.categories?.find((column) => column.source.roles?.Category);
         const mapColumn = categorical?.categories?.find((column) => column.source.roles?.MapSeries);
         const measureColumn = categorical?.values?.find((column) => column.source.roles?.Y);
-        const stateColumn = categorical?.values?.find((column) => column.source.roles?.State || column.source.roles?.states);
+        const stateMeasureColumn = categorical?.values?.find((column) => column.source.roles?.State);
+        const tooltipColumns = categorical?.values?.filter((column) => column.source.roles?.tooltips) ?? [];
+        const boundStateColumns = categorical?.values?.filter((column) => column.source.roles?.states) ?? [];
+
+        const boundStates: SynopticBoundState[] = [];
+        const hasBoundStates = boundStateColumns.length > 0;
+
+        if (hasBoundStates) {
+            for (let s = 0; s < boundStateColumns.length; s++) {
+                const col = boundStateColumns[s];
+                const val = this.readNumericValue(col.values?.[0]);
+                if (val == null) continue;
+
+                const fillObj = col.source.objects?.["states"]?.["fill"] as { solid?: { color?: string } } | undefined;
+                boundStates.push({
+                    value: val,
+                    color: fillObj?.solid?.color ?? null,
+                    displayName: col.source.displayName ?? null,
+                    sourcePosition: s,
+                    isTarget: false
+                });
+            }
+        }
+
+        const resolvedStates = hasBoundStates
+            ? this.sortBoundStates(boundStates, settings.states.comparison)
+            : settings.states.manual.filter((s) => s.value != null && s.color)
+                .map((s, i) => ({ value: s.value!, color: s.color!, displayName: null, sourcePosition: i, isTarget: false }));
 
         const dataPoints: SynopticDataPoint[] = [];
         const highlights = measureColumn?.highlights;
@@ -165,8 +223,34 @@ export class Visual implements IVisual {
 
             const value = this.readNumericValue(measureColumn?.values?.[index]);
             const highlightValue = this.readNumericValue(highlights?.[index]);
-            const stateValue = this.readNumericValue(stateColumn?.values?.[index]);
-            const color = this.resolveDataPointColor(key, stateValue, settings, colorPalette);
+            const rawStateValue = this.readNumericValue(stateMeasureColumn?.values?.[index]);
+            const stateValue = rawStateValue ?? value;
+
+            const tooltips: VisualTooltipDataItem[] = [];
+            tooltips.push({ displayName: categoryColumn.source.displayName ?? "Category", value: key });
+            if (value != null) {
+                tooltips.push({
+                    displayName: measureColumn!.source.displayName ?? "Value",
+                    value: this.formatTooltipValue(value, measureColumn!.source.format)
+                });
+            }
+            if (stateValue != null && stateMeasureColumn) {
+                tooltips.push({
+                    displayName: stateMeasureColumn.source.displayName ?? "State",
+                    value: this.formatTooltipValue(stateValue, stateMeasureColumn.source.format)
+                });
+            }
+            for (const tooltipCol of tooltipColumns) {
+                const tooltipVal = tooltipCol.values?.[index];
+                if (tooltipVal != null) {
+                    tooltips.push({
+                        displayName: tooltipCol.source.displayName ?? "",
+                        value: this.formatTooltipValue(tooltipVal, tooltipCol.source.format)
+                    });
+                }
+            }
+
+            const color = this.resolveDataPointColor(key, stateValue, resolvedStates, settings, colorPalette);
 
             dataPoints.push({
                 key,
@@ -177,13 +261,16 @@ export class Visual implements IVisual {
                 color,
                 selectionId: this.host.createSelectionIdBuilder()
                     .withCategory(categoryColumn, index)
-                    .createSelectionId()
+                    .createSelectionId(),
+                tooltips
             });
         }
 
         return {
             map: this.resolveMapDefinition(mapColumn, settings),
             dataPoints,
+            boundStates: resolvedStates,
+            hasBoundStates,
             hasHighlights,
             settings
         };
@@ -207,15 +294,25 @@ export class Visual implements IVisual {
             const svgElement = this.inflateSvg(svgMarkup);
             this.applySavedScale(svgElement, model.map.scale);
 
-            const matchMap = this.indexSvg(svgElement, model.map.areas ?? []);
-            const labelSpecs = this.applyData(svgElement, matchMap, model);
+            const areas = model.map.areas && model.map.areas.length > 0
+                ? model.map.areas
+                : this.inferAreas(svgElement);
+            const matchMap = this.indexSvg(svgElement, areas);
+            const { matchedElements, labels: labelSpecs } = this.applyData(svgElement, matchMap, model);
             if (model.settings.dataLabels.show) {
                 this.renderLabels(svgElement, labelSpecs, model.settings);
             }
 
             this.svgHost.appendChild(svgElement);
+            this.currentSvg = svgElement;
+            this.currentMatchedElements = matchedElements;
 
-            const matchedCount = model.dataPoints.filter((point) => matchMap.has(this.normalizeKey(point.key))).length;
+            const activeIds = this.selectionManager.getSelectionIds() as ISelectionId[];
+            if (activeIds.length > 0) {
+                this.applySelectionState(svgElement, matchedElements, activeIds);
+            }
+
+            const matchedCount = model.dataPoints.filter((point) => this.getMatchingElements(point.key, matchMap).length > 0).length;
             this.status.textContent = `${matchedCount}/${model.dataPoints.length} areas matched`;
         } catch (error) {
             if (nonce !== this.updateNonce) {
@@ -229,14 +326,13 @@ export class Visual implements IVisual {
         }
     }
 
-    private applyData(svgElement: SVGSVGElement, matchMap: SvgMatchMap, model: SynopticModel): LabelSpec[] {
+    private applyData(svgElement: SVGSVGElement, matchMap: SvgMatchMap, model: SynopticModel): { matchedElements: Set<SVGElement>; labels: LabelSpec[] } {
         const matchedElements = new Set<SVGElement>();
         const labels: LabelSpec[] = [];
         svgElement.setAttribute("data-has-highlights", model.hasHighlights ? "true" : "false");
 
         for (const point of model.dataPoints) {
-            const normalizedKey = this.normalizeKey(point.key);
-            const matches = matchMap.get(normalizedKey) ?? [];
+            const matches = this.getMatchingElements(point.key, matchMap);
             if (matches.length === 0) {
                 continue;
             }
@@ -257,18 +353,17 @@ export class Visual implements IVisual {
                     element.style.strokeWidth = element.style.strokeWidth || "1";
                 }
 
-                if (model.hasHighlights) {
-                    element.style.opacity = point.isHighlighted ? "1" : "0.25";
-                }
-
-                const tooltip = point.value == null ? point.key : `${point.key}: ${point.value}`;
-                element.setAttribute("title", tooltip);
+                this.attachTooltipEvents(element, point.tooltips, point.selectionId);
                 element.addEventListener("click", (event: MouseEvent) => {
                     event.preventDefault();
                     event.stopPropagation();
 
                     void this.selectionManager.select(point.selectionId, event.ctrlKey || event.metaKey).then(() => {
-                        this.applySelectionState(svgElement, matchedElements, point.selectionId);
+                        const ids = this.selectionManager.getSelectionIds() as ISelectionId[];
+                        this.status.textContent = `sel:${ids.length} has:${this.selectionManager.hasSelection()} svg:${!!this.currentSvg}`;
+                        if (this.currentSvg) {
+                            this.applySelectionState(this.currentSvg, this.currentMatchedElements, ids);
+                        }
                     });
                 });
 
@@ -282,15 +377,22 @@ export class Visual implements IVisual {
             }
         }
 
+        if (model.hasHighlights) {
+            svgElement.setAttribute("data-synoptic-dimmed", "true");
+            for (const element of matchedElements) {
+                const isHighlighted = element.getAttribute("data-highlighted") === "true";
+                if (isHighlighted) {
+                    element.setAttribute("data-synoptic-active", "true");
+                }
+            }
+        }
+
         if (model.settings.general.showUnmatched) {
             const unmatchedFill = model.settings.dataPoint.unmatchedFill;
             if (unmatchedFill) {
                 for (const element of this.collectRenderableElements(svgElement)) {
                     if (!matchedElements.has(element)) {
                         element.style.fill = unmatchedFill;
-                        if (model.hasHighlights) {
-                            element.style.opacity = "0.08";
-                        }
                     }
                 }
             }
@@ -313,15 +415,16 @@ export class Visual implements IVisual {
         }
 
         svgElement.addEventListener("click", () => {
-            void this.selectionManager.clear().then(() => this.applySelectionState(svgElement, matchedElements));
+            void this.selectionManager.clear();
         });
 
-        return labels;
+        return { matchedElements, labels };
     }
 
     private renderLabels(svgElement: SVGSVGElement, labels: LabelSpec[], settings: SynopticVisualSettings): void {
         const labelLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
         labelLayer.setAttribute("class", "synoptic-label-layer");
+        labelLayer.setAttribute("pointer-events", "none");
 
         for (const label of labels) {
             const bbox = this.getElementBounds(label.element);
@@ -374,21 +477,37 @@ export class Visual implements IVisual {
         return areaName ?? "";
     }
 
-    private applySelectionState(svgElement: SVGSVGElement, matchedElements: Set<SVGElement>, activeSelection?: ISelectionId): void {
-        const hasSelection = Boolean(activeSelection);
+    private applySelectionState(svgElement: SVGSVGElement, matchedElements: Set<SVGElement>, activeSelections: ISelectionId[]): void {
+        const hasSelection = activeSelections.length > 0;
         const hasHighlights = svgElement.getAttribute("data-has-highlights") === "true";
-        for (const element of this.collectRenderableElements(svgElement)) {
-            const isMatched = matchedElements.has(element);
-            const isSelected = hasSelection && element.getAttribute("data-selection-key") === activeSelection!.getKey();
-            if (!hasSelection) {
-                if (hasHighlights) {
-                    const isHighlighted = element.getAttribute("data-highlighted") === "true";
-                    element.style.opacity = isHighlighted ? "1" : (isMatched ? "0.25" : "0.08");
+        const activeKeys = new Set(activeSelections.map((s) => s.getKey()));
+
+        if (!hasSelection && !hasHighlights) {
+            svgElement.removeAttribute("data-synoptic-dimmed");
+            for (const element of matchedElements) {
+                element.removeAttribute("data-synoptic-active");
+            }
+            return;
+        }
+
+        svgElement.setAttribute("data-synoptic-dimmed", "true");
+
+        for (const element of matchedElements) {
+            if (hasSelection) {
+                const selKey = element.getAttribute("data-selection-key");
+                const isSelected = selKey != null && activeKeys.has(selKey);
+                if (isSelected) {
+                    element.setAttribute("data-synoptic-active", "true");
                 } else {
-                    element.style.opacity = "1";
+                    element.removeAttribute("data-synoptic-active");
                 }
             } else {
-                element.style.opacity = isSelected ? "1" : (isMatched ? "0.25" : "0.1");
+                const isHighlighted = element.getAttribute("data-highlighted") === "true";
+                if (isHighlighted) {
+                    element.setAttribute("data-synoptic-active", "true");
+                } else {
+                    element.removeAttribute("data-synoptic-active");
+                }
             }
         }
     }
@@ -405,6 +524,10 @@ export class Visual implements IVisual {
 
         for (const element of this.collectRenderableElements(svgElement)) {
             const area = this.resolveAreaMetadata(element, areaBySelector);
+            if (area?.unmatchable) {
+                continue;
+            }
+
             if (area?.displayName) {
                 element.setAttribute("data-synoptic-display-name", area.displayName);
             }
@@ -419,18 +542,43 @@ export class Visual implements IVisual {
             ];
 
             for (const candidate of candidateKeys) {
-                const normalized = this.normalizeKey(candidate);
-                if (!normalized) {
-                    continue;
+                for (const variant of this.buildMatchVariants(candidate)) {
+                    const elements = matchMap.get(variant) ?? [];
+                    if (!elements.includes(element)) {
+                        elements.push(element);
+                    }
+                    matchMap.set(variant, elements);
                 }
-
-                const elements = matchMap.get(normalized) ?? [];
-                elements.push(element);
-                matchMap.set(normalized, elements);
             }
         }
 
         return matchMap;
+    }
+
+    private inferAreas(svgElement: SVGSVGElement): SynopticMapArea[] {
+        const areas: SynopticMapArea[] = [];
+
+        for (const element of this.collectRenderableElements(svgElement)) {
+            const elementId = element.id || undefined;
+            const displayName = this.readTitleNode(element)
+                ?? element.getAttribute("title")
+                ?? elementId;
+            const parentMatchableName = this.findMatchableParentName(element);
+            const unmatchable = this.isIgnoredOrExcluded(element) || this.isExcludedParent(element);
+
+            if (!elementId && !displayName && !parentMatchableName) {
+                continue;
+            }
+
+            areas.push({
+                selector: elementId ? `#${this.escapeSelector(elementId)}` : undefined,
+                elementId,
+                displayName: parentMatchableName ?? displayName ?? undefined,
+                unmatchable
+            });
+        }
+
+        return areas;
     }
 
     private resolveAreaMetadata(element: SVGElement, areaBySelector: Map<string, SynopticMapArea>): SynopticMapArea | undefined {
@@ -446,8 +594,113 @@ export class Visual implements IVisual {
     }
 
     private collectRenderableElements(svgElement: SVGSVGElement): SVGElement[] {
-        const selector = "path, polygon, polyline, rect, circle, ellipse, line";
+        const selector = "g, path, polygon, polyline, rect, circle, ellipse, line, text";
         return Array.from(svgElement.querySelectorAll<SVGElement>(selector));
+    }
+
+    private getMatchingElements(key: string, matchMap: SvgMatchMap): SVGElement[] {
+        const matches: SVGElement[] = [];
+        const seen = new Set<SVGElement>();
+
+        for (const variant of this.buildMatchVariants(key)) {
+            for (const element of matchMap.get(variant) ?? []) {
+                if (!seen.has(element)) {
+                    seen.add(element);
+                    matches.push(element);
+                }
+            }
+        }
+
+        return matches;
+    }
+
+    private buildMatchVariants(value: string | null | undefined): string[] {
+        const variants = new Set<string>();
+        const raw = value == null ? "" : String(value);
+        if (!raw.trim()) {
+            return [];
+        }
+
+        const candidates = [
+            raw,
+            this.toLegacySvgId(raw, "illustrator"),
+            this.toLegacySvgId(raw, "inkscape"),
+            this.toLegacySvgId(raw, "legacy")
+        ];
+
+        for (const candidate of candidates) {
+            const normalized = this.normalizeKey(candidate);
+            if (normalized) {
+                variants.add(normalized);
+            }
+        }
+
+        return Array.from(variants);
+    }
+
+    private toLegacySvgId(value: string, appSupport: "illustrator" | "inkscape" | "legacy"): string {
+        let returnId = value;
+        if (appSupport === "illustrator") {
+            returnId = returnId.replace(/[^A-Za-z0-9-:.]/g, (match) => {
+                if (match === " ") {
+                    return "_";
+                }
+
+                return `_x${match.charCodeAt(0).toString(16).toUpperCase()}_`;
+            });
+
+            if (/^\d/.test(returnId)) {
+                returnId = `_x${returnId.charCodeAt(0).toString(16).toUpperCase()}_${returnId.slice(1)}`;
+            }
+        } else if (appSupport === "inkscape") {
+            returnId = returnId.replace(/[^A-Za-z0-9-:.]/g, "_");
+        } else {
+            returnId = returnId.replace(/([^A-Za-z0-9[\]{}_.:-])\s?/g, "_");
+            if (/^\d/.test(returnId)) {
+                returnId = `_${returnId}`;
+            }
+        }
+
+        return returnId;
+    }
+
+    private isIgnoredOrExcluded(element: SVGElement): boolean {
+        return element.matches("#_x5F_ignored, #_ignored, .excluded, #_x5F_excluded, #_excluded");
+    }
+
+    private isExcludedParent(element: SVGElement): boolean {
+        const parent = element.parentElement?.closest("[id], svg");
+        if (!parent || parent.tagName.toLowerCase() === "svg") {
+            return false;
+        }
+
+        return parent.matches(".excluded, #_x5F_excluded, #_excluded");
+    }
+
+    private findMatchableParentName(element: SVGElement): string | null {
+        const parent = element.parentElement?.closest("[id], svg") as SVGElement | null;
+        if (!parent || parent.tagName.toLowerCase() === "svg") {
+            return null;
+        }
+
+        if (parent.matches("#_x5F_ignored, #_ignored")) {
+            return null;
+        }
+
+        if (parent.matches(".excluded, #_x5F_excluded, #_excluded")) {
+            return null;
+        }
+
+        return this.readTitleNode(parent) ?? parent.getAttribute("title") ?? (parent.id || null);
+    }
+
+    private escapeSelector(value: string): string {
+        const css = (window as Window & typeof globalThis & { CSS?: { escape?(input: string): string } }).CSS;
+        if (css?.escape) {
+            return css.escape(value);
+        }
+
+        return value.replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
     }
 
     private readTitleNode(element: SVGElement): string | null {
@@ -598,10 +851,11 @@ export class Visual implements IVisual {
     private resolveDataPointColor(
         key: string,
         stateValue: number | undefined,
+        resolvedStates: SynopticBoundState[],
         settings: SynopticVisualSettings,
         colorPalette: IColorPalette
     ): string {
-        const stateColor = this.resolveStateColor(stateValue, settings.states);
+        const stateColor = this.resolveStateColor(stateValue, resolvedStates, settings.states);
         if (stateColor) {
             return stateColor;
         }
@@ -609,37 +863,96 @@ export class Visual implements IVisual {
         return colorPalette.getColor(key).value ?? settings.dataPoint.defaultFill;
     }
 
-    private resolveStateColor(stateValue: number | undefined, states: SynopticVisualSettings["states"]): string | undefined {
-        if (!states.show || stateValue == null) {
+    private resolveStateColor(
+        stateValue: number | undefined,
+        resolvedStates: SynopticBoundState[],
+        stateSettings: SynopticVisualSettings["states"]
+    ): string | undefined {
+        if (!stateSettings.show || stateValue == null || resolvedStates.length === 0) {
             return undefined;
         }
 
-        const configuredStates = states.manual.filter((entry) => entry.value != null && entry.color);
-        if (configuredStates.length === 0) {
-            return undefined;
+        const comparison = stateSettings.comparison;
+
+        if (comparison === "=") {
+            const match = resolvedStates.find((s) => s.color && stateValue === s.value);
+            return match?.color ?? undefined;
         }
 
-        const orderedStates = [...configuredStates].sort((left, right) => (left.value ?? 0) - (right.value ?? 0));
-        if (states.comparison === ">=" || states.comparison === ">") {
-            const reversed = [...orderedStates].reverse();
-            const match = reversed.find((entry) => states.comparison === ">" ? stateValue > (entry.value ?? 0) : stateValue >= (entry.value ?? 0));
-            return match?.color;
+        if (comparison === ">=" || comparison === ">") {
+            const descending = [...resolvedStates].sort((a, b) => b.value - a.value);
+            const match = descending.find((s) => s.color && (comparison === ">" ? stateValue > s.value : stateValue >= s.value));
+            return match?.color ?? undefined;
         }
 
-        const match = orderedStates.find((entry) => {
-            const threshold = entry.value ?? 0;
-            switch (states.comparison) {
-                case "<":
-                    return stateValue < threshold;
-                case "=":
-                    return stateValue === threshold;
-                case "<=":
-                default:
-                    return stateValue <= threshold;
-            }
+        const ascending = [...resolvedStates].sort((a, b) => a.value - b.value);
+        const match = ascending.find((s) => {
+            if (!s.color) return false;
+            return comparison === "<" ? stateValue < s.value : stateValue <= s.value;
+        });
+        return match?.color ?? undefined;
+    }
+
+    private sortBoundStates(states: SynopticBoundState[], comparison: string): SynopticBoundState[] {
+        if (comparison === "=") return states;
+        const asc = comparison.indexOf("<") > -1;
+        return [...states].sort((a, b) => asc ? a.value - b.value : b.value - a.value);
+    }
+
+    private attachTooltipEvents(element: SVGElement, tooltipItems: VisualTooltipDataItem[], selectionId: ISelectionId): void {
+        if (!this.tooltipService.enabled()) return;
+
+        const getCoords = (event: MouseEvent): number[] => {
+            const rect = this.root.getBoundingClientRect();
+            return [event.clientX - rect.left, event.clientY - rect.top];
+        };
+
+        element.addEventListener("mouseover", (event: MouseEvent) => {
+            this.tooltipService.show({
+                coordinates: getCoords(event),
+                isTouchEvent: false,
+                dataItems: tooltipItems,
+                identities: [selectionId]
+            });
         });
 
-        return match?.color;
+        element.addEventListener("mousemove", (event: MouseEvent) => {
+            this.tooltipService.move({
+                coordinates: getCoords(event),
+                isTouchEvent: false,
+                dataItems: tooltipItems,
+                identities: [selectionId]
+            });
+        });
+
+        element.addEventListener("mouseout", () => {
+            this.tooltipService.hide({
+                isTouchEvent: false,
+                immediately: false
+            });
+        });
+    }
+
+    private formatTooltipValue(value: PrimitiveValue, format?: string): string {
+        if (value == null) return "";
+        if (typeof value === "number") {
+            if (format) {
+                return this.formatNumberWithPattern(value, format);
+            }
+            return this.formatNumber(value);
+        }
+        return String(value);
+    }
+
+    private formatNumberWithPattern(value: number, format: string): string {
+        if (format.indexOf("%") > -1) {
+            return `${(value * 100).toFixed(1)}%`;
+        }
+        if (format.indexOf("0.0") > -1) {
+            const decimals = (format.match(/0\.(0+)/)?.[1] ?? "").length;
+            return value.toFixed(decimals);
+        }
+        return this.formatNumber(value);
     }
 
     private getFillColor(

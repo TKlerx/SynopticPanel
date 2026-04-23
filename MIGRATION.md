@@ -14,21 +14,23 @@
 - Loading inline SVG markup from persisted `general.imageData`
 - Loading a map from the `MapSeries` role when a URL or SVG payload is bound there
 - Matching category names to SVG element `id`, `title`, or child `<title>` values
-- Applying colors and basic selection behavior to matched shapes
+- Falling back to inferred SVG areas when persisted `areas[]` metadata is missing
+- Applying colors and selection behavior to matched shapes
+- Cross-filtering between Synoptic and other visuals in both directions
+- Restored main custom format pane cards through `getFormattingModel()`
 
 ## What is intentionally simplified
 
-- No modern format pane cards yet
 - No gallery integration
-- No zoom toolbar
-- No advanced labels
-- No state or target calculations
+- No restored zoom toolbar UI yet
+- Labels are only partially ported
+- State and target calculations are only partially ported
 - No persisted map editing UX
 
 ## Recommended next migration slices
 
-1. Port the format pane into `getFormattingModel()`
-2. Reintroduce data labels and unmatched-area behavior
-3. Port state/target coloring logic
+1. Validate fallback matching against the G+D machine-health report
+2. Complete label and state/target behavior parity
+3. Restore toolbar behavior and zoom UX where still required
 4. Port map gallery and local map management, subject to current WebAccess constraints
 5. Add certification-oriented features like tooltips, keyboard support, and high-contrast support
