@@ -455,6 +455,8 @@ These are in decent shape:
 3. Add edit mode awareness (`viewMode`) for toolbar/authoring gating
 4. Restore per-object color overrides (dynamic formatting model instances)
 5. Wire `states.baseFill` property
+6. Fix unmatched-area behavior so the unmatched overlay/count excludes SVG areas that are intentionally not mapped to data, and only reports actionable missing mappings.
+7. Move the SVG `Change` authoring button to the top right so it does not cover the matched/unmatched diagnostic overlay.
 
 ### Tier 2: Required For Behavior Parity
 
@@ -462,12 +464,15 @@ These are in decent shape:
 2. Restore full state logic including target and saturation
 3. Restore label placement/formatting parity (unit, precision, best-fit)
 4. Restore show-all and category/group-specific color behavior (`showAll`, `colorByCategory`)
+5. Restore general effects behavior so the visual can disable the background color/effect and render only the SVG with transparency.
 
 ### Tier 3: Optional Or Product-Decision Dependent
 
 1. Restore gallery UX
 2. Restore color blindness simulation
 3. Add certification-oriented features (keyboard support, high-contrast)
+4. Build a cross-platform companion SVG preparation application that lets users load an SVG, fill/style the relevant areas, create or validate area mappings, and export an SVG/map payload that is ready to display in Synoptic Panel / Synoptic Designer. The app should not be Windows-only; prefer a web-first or otherwise portable architecture that works across Windows, macOS, and Linux.
+5. Decide product naming/licensing posture for the fork: verify the old v1 MIT license provenance, retain original copyright/license notices, avoid implying endorsement by the original authors, and choose a renamed product identity that does not conflict with existing OKViz/SQBI trademarks or the commercial v2 branding.
 
 ## Bottom Line
 
