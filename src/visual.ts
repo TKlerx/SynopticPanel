@@ -424,6 +424,8 @@ export class Visual implements IVisual {
 
         const indexedElements = this.getIndexedElements(matchMap);
 
+        const unmatchedElements = this.getUnmatchedElements(indexedElements, matchedElements);
+
         for (const element of indexedElements) {
             if (!matchedElements.has(element)) {
                 if (model.settings.general.showUnmatched) {
@@ -466,6 +468,30 @@ export class Visual implements IVisual {
         });
 
         return { matchedElements, labels };
+    }
+
+    private getUnmatchedElements(indexedElements: Set<SVGElement>, matchedElements: Set<SVGElement>): Set<SVGElement> {
+        const unmatchedElements = new Set<SVGElement>();
+
+        for (const element of indexedElements) {
+            if (matchedElements.has(element) || this.hasMatchedDescendant(element, matchedElements)) {
+                continue;
+            }
+
+            unmatchedElements.add(element);
+        }
+
+        return unmatchedElements;
+    }
+
+    private hasMatchedDescendant(element: SVGElement, matchedElements: Set<SVGElement>): boolean {
+        for (const matchedElement of matchedElements) {
+            if (matchedElement !== element && element.contains(matchedElement)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private getIndexedElements(matchMap: SvgMatchMap): Set<SVGElement> {
