@@ -20,7 +20,7 @@ Steps:
 
 Expected:
 - name is `Mapped SVG Panel`
-- ID is `PBI_CV_815282F9_27F5_4950_9430_E910E0A8DB6A`
+- ID is `PBI_CV_07C304C8_34D8_45BC_AE03_B2864A3DB425`
 - version matches the package under test
 
 ## Aldi Sample Report
