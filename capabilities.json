@@ -139,6 +139,12 @@
             "bool": true
           }
         },
+        "showMatchCount": {
+          "displayName": "Match count label",
+          "type": {
+            "bool": true
+          }
+        },
         "showDiagnostic": {
           "displayName": "Diagnostic console log",
           "type": {

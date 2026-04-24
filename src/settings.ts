@@ -69,6 +69,12 @@ class GeneralCardSettings extends FormattingSettingsCard {
         value: true
     });
 
+    showMatchCount = new formattingSettings.ToggleSwitch({
+        name: "showMatchCount",
+        displayName: "Match count label",
+        value: true
+    });
+
     showDiagnostic = new formattingSettings.ToggleSwitch({
         name: "showDiagnostic",
         displayName: "Diagnostic console log",
@@ -78,7 +84,7 @@ class GeneralCardSettings extends FormattingSettingsCard {
     name = "general";
     displayName = "General";
     analyticsPane = false;
-    slices: FormattingSettingsSlice[] = [this.showUnmatched, this.showDiagnostic];
+    slices: FormattingSettingsSlice[] = [this.showUnmatched, this.showMatchCount, this.showDiagnostic];
 }
 
 class ToolbarCardSettings extends FormattingSettingsCard {
