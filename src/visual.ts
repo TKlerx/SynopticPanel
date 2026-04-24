@@ -424,18 +424,28 @@ export class Visual implements IVisual {
 
         const indexedElements = this.getIndexedElements(matchMap);
 
-        if (model.settings.general.showUnmatched) {
-            const unmatchedFill = model.settings.dataPoint.unmatchedFill;
-            if (unmatchedFill) {
-                for (const element of indexedElements) {
-                    if (!matchedElements.has(element)) {
+        for (const element of indexedElements) {
+            if (!matchedElements.has(element)) {
+                if (model.settings.general.showUnmatched) {
+                    element.style.display = "";
+                    const unmatchedFill = model.settings.dataPoint.unmatchedFill;
+                    if (unmatchedFill) {
                         element.style.fill = unmatchedFill;
+                    }
+                } else {
+                    // Keep the element visible if it is an ancestor OR a descendant of a matched element,
+                    // to avoid hiding matched children or matched parent containers.
+                    const isRelatedToMatched = [...matchedElements].some(
+                        (matched) => element.contains(matched) || matched.contains(element)
+                    );
+                    if (!isRelatedToMatched) {
+                        element.style.display = "none";
                     }
                 }
             }
         }
 
-        if (model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels) {
+        if (model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels && model.settings.general.showUnmatched) {
             for (const element of indexedElements) {
                 if (matchedElements.has(element)) {
                     continue;
