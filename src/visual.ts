@@ -424,23 +424,24 @@ export class Visual implements IVisual {
 
         const indexedElements = this.getIndexedElements(matchMap);
 
+        const unmatchedElements = this.getUnmatchedElements(indexedElements, matchedElements);
+
         if (model.settings.general.showUnmatched) {
             const unmatchedFill = model.settings.dataPoint.unmatchedFill;
             if (unmatchedFill) {
-                for (const element of indexedElements) {
-                    if (!matchedElements.has(element)) {
-                        element.style.fill = unmatchedFill;
-                    }
+                for (const element of unmatchedElements) {
+                    element.style.fill = unmatchedFill;
                 }
+            }
+        } else {
+            for (const element of unmatchedElements) {
+                element.style.display = "none";
+                element.style.pointerEvents = "none";
             }
         }
 
-        if (model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels) {
-            for (const element of indexedElements) {
-                if (matchedElements.has(element)) {
-                    continue;
-                }
-
+        if (model.settings.general.showUnmatched && model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels) {
+            for (const element of unmatchedElements) {
                 const labelText = this.buildUnmatchedLabelText(element, model.settings);
                 if (labelText) {
                     labels.push({
@@ -456,6 +457,30 @@ export class Visual implements IVisual {
         });
 
         return { matchedElements, labels };
+    }
+
+    private getUnmatchedElements(indexedElements: Set<SVGElement>, matchedElements: Set<SVGElement>): Set<SVGElement> {
+        const unmatchedElements = new Set<SVGElement>();
+
+        for (const element of indexedElements) {
+            if (matchedElements.has(element) || this.hasMatchedDescendant(element, matchedElements)) {
+                continue;
+            }
+
+            unmatchedElements.add(element);
+        }
+
+        return unmatchedElements;
+    }
+
+    private hasMatchedDescendant(element: SVGElement, matchedElements: Set<SVGElement>): boolean {
+        for (const matchedElement of matchedElements) {
+            if (matchedElement !== element && element.contains(matchedElement)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private getIndexedElements(matchMap: SvgMatchMap): Set<SVGElement> {
