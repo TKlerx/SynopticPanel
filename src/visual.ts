@@ -44,6 +44,7 @@ interface SynopticVisualSettings {
         imageSelected: number;
         showDiagnostic: boolean;
         showUnmatched: boolean;
+        showMatchCount: boolean;
     };
     dataPoint: {
         borders: boolean;
@@ -114,6 +115,7 @@ export class Visual implements IVisual {
     private readonly formattingSettingsService: FormattingSettingsService;
     private readonly root: HTMLDivElement;
     private readonly toolbar: HTMLDivElement;
+    private readonly changeButton: HTMLButtonElement;
     private readonly fileInput: HTMLInputElement;
     private readonly status: HTMLDivElement;
     private readonly svgHost: HTMLDivElement;
@@ -123,6 +125,7 @@ export class Visual implements IVisual {
     private updateNonce: number;
     private currentSvg: SVGSVGElement | null;
     private currentMatchedElements: Set<SVGElement>;
+    private currentSettings: SynopticVisualSettings["general"] | null;
 
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
@@ -134,6 +137,7 @@ export class Visual implements IVisual {
         this.updateNonce = 0;
         this.currentSvg = null;
         this.currentMatchedElements = new Set();
+        this.currentSettings = null;
 
         this.selectionManager.registerOnSelectCallback(() => {
             const ids = this.selectionManager.getSelectionIds() as ISelectionId[];
@@ -148,11 +152,11 @@ export class Visual implements IVisual {
         this.toolbar = document.createElement("div");
         this.toolbar.className = "toolbar synoptic-toolbar";
 
-        const changeButton = document.createElement("button");
-        changeButton.type = "button";
-        changeButton.textContent = "Change";
-        changeButton.title = "Load an SVG map";
-        changeButton.addEventListener("click", (event) => {
+        this.changeButton = document.createElement("button");
+        this.changeButton.type = "button";
+        this.changeButton.textContent = "Change";
+        this.changeButton.title = "Load an SVG map";
+        this.changeButton.addEventListener("click", (event) => {
             event.stopPropagation();
             this.fileInput.click();
         });
@@ -165,7 +169,7 @@ export class Visual implements IVisual {
         this.fileInput.addEventListener("click", (event) => event.stopPropagation());
         this.fileInput.addEventListener("change", () => this.handleLocalMapFiles(this.fileInput.files));
 
-        this.toolbar.append(changeButton, this.fileInput);
+        this.toolbar.append(this.changeButton, this.fileInput);
 
         this.status = document.createElement("div");
         this.status.className = "synoptic-status";
@@ -188,6 +192,7 @@ export class Visual implements IVisual {
         this.toolbar.hidden = !this.isEditMode(options.viewMode);
 
         const model = this.transform(options.dataViews?.[0], this.host.colorPalette);
+        this.changeButton.hidden = Boolean(model.map);
         const currentNonce = ++this.updateNonce;
 
         void this.render(model, currentNonce);
@@ -331,6 +336,7 @@ export class Visual implements IVisual {
             this.svgHost.appendChild(svgElement);
             this.currentSvg = svgElement;
             this.currentMatchedElements = matchedElements;
+            this.currentSettings = model.settings.general;
 
             const activeIds = this.selectionManager.getSelectionIds() as ISelectionId[];
             if (activeIds.length > 0) {
@@ -395,7 +401,9 @@ export class Visual implements IVisual {
 
                     void this.selectionManager.select(point.selectionId, event.ctrlKey || event.metaKey).then(() => {
                         const ids = this.selectionManager.getSelectionIds() as ISelectionId[];
-                        this.status.textContent = `sel:${ids.length} has:${this.selectionManager.hasSelection()} svg:${!!this.currentSvg}`;
+                        if (this.currentSettings?.showDiagnostic) {
+                            this.status.textContent = `sel:${ids.length} has:${this.selectionManager.hasSelection()} svg:${!!this.currentSvg}`;
+                        }
                         if (this.currentSvg) {
                             this.applySelectionState(this.currentSvg, this.currentMatchedElements, ids);
                         }
@@ -464,7 +472,11 @@ export class Visual implements IVisual {
         }
 
         svgElement.addEventListener("click", () => {
-            void this.selectionManager.clear();
+            void this.selectionManager.clear().then(() => {
+                if (this.currentSvg) {
+                    this.applySelectionState(this.currentSvg, this.currentMatchedElements, []);
+                }
+            });
         });
 
         return { matchedElements, labels };
@@ -977,7 +989,14 @@ export class Visual implements IVisual {
     }
 
     private buildStatusText(model: SynopticModel, svgAreaCount: number, indexedKeyCount: number, matchedCount: number): string {
-        const baseStatus = `${matchedCount}/${model.dataPoints.length} areas matched`;
+        if (!model.settings.general.showMatchCount && !model.settings.general.showDiagnostic) {
+            return "";
+        }
+
+        const baseStatus = model.settings.general.showMatchCount
+            ? `${matchedCount}/${model.dataPoints.length} areas matched`
+            : "";
+
         if (!model.settings.general.showDiagnostic) {
             return baseStatus;
         }
@@ -1022,7 +1041,8 @@ export class Visual implements IVisual {
                 imageData: this.getValue<string>(objects, "general", "imageData"),
                 imageSelected: this.getValue<number>(objects, "general", "imageSelected", 0),
                 showDiagnostic: this.getValue<boolean>(objects, "general", "showDiagnostic", false),
-                showUnmatched: this.getValue<boolean>(objects, "general", "showUnmatched", true)
+                showUnmatched: this.getValue<boolean>(objects, "general", "showUnmatched", true),
+                showMatchCount: this.getValue<boolean>(objects, "general", "showMatchCount", true)
             },
             dataPoint: {
                 borders: this.getValue<boolean>(objects, "dataPoint", "borders", true),
