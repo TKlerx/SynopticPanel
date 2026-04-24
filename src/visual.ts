@@ -426,22 +426,33 @@ export class Visual implements IVisual {
 
         const unmatchedElements = this.getUnmatchedElements(indexedElements, matchedElements);
 
-        if (model.settings.general.showUnmatched) {
-            const unmatchedFill = model.settings.dataPoint.unmatchedFill;
-            if (unmatchedFill) {
-                for (const element of unmatchedElements) {
-                    element.style.fill = unmatchedFill;
+        for (const element of indexedElements) {
+            if (!matchedElements.has(element)) {
+                if (model.settings.general.showUnmatched) {
+                    element.style.display = "";
+                    const unmatchedFill = model.settings.dataPoint.unmatchedFill;
+                    if (unmatchedFill) {
+                        element.style.fill = unmatchedFill;
+                    }
+                } else {
+                    // Keep the element visible if it is an ancestor OR a descendant of a matched element,
+                    // to avoid hiding matched children or matched parent containers.
+                    const isRelatedToMatched = [...matchedElements].some(
+                        (matched) => element.contains(matched) || matched.contains(element)
+                    );
+                    if (!isRelatedToMatched) {
+                        element.style.display = "none";
+                    }
                 }
-            }
-        } else {
-            for (const element of unmatchedElements) {
-                element.style.display = "none";
-                element.style.pointerEvents = "none";
             }
         }
 
-        if (model.settings.general.showUnmatched && model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels) {
-            for (const element of unmatchedElements) {
+        if (model.settings.dataLabels.show && model.settings.dataLabels.unmatchedLabels && model.settings.general.showUnmatched) {
+            for (const element of indexedElements) {
+                if (matchedElements.has(element)) {
+                    continue;
+                }
+
                 const labelText = this.buildUnmatchedLabelText(element, model.settings);
                 if (labelText) {
                     labels.push({
